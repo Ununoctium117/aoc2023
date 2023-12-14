@@ -10,13 +10,13 @@ struct Map {
 }
 impl Map {
     // offset: how to move the rock
-    // comparator: comparison function that will order "earlier" rocks before "later" ones
-    // in_bounds: given (old rock pos, new rock pos), check if new rock pos is acceptable
+    // comparator: comparison function that will order "earlier" moving rocks before "later" ones
+    // ok_move: given (old rock pos, new rock pos), check if new rock pos is acceptable
     fn roll(
         &mut self,
         offset: isize,
         comparator: impl Fn(&usize, &usize) -> Ordering,
-        in_bounds: impl Fn(usize, usize) -> bool,
+        ok_move: impl Fn(usize, usize) -> bool,
     ) -> bool {
         let mut map_changed = false;
 
@@ -27,7 +27,7 @@ impl Map {
 
             let mut rock_pos = self.round_rock_pos[rock_idx];
             while let Some(new_pos) = rock_pos.checked_add_signed(offset) {
-                if in_bounds(rock_pos, new_pos) && !self.is_blocked(new_pos, &comparator) {
+                if ok_move(rock_pos, new_pos) && !self.is_blocked(new_pos, &comparator) {
                     rock_pos = new_pos;
                     rock_changed = true;
                 } else {
@@ -91,7 +91,7 @@ impl Map {
     }
 
     fn is_blocked(&self, idx: usize, comparator: impl Fn(&usize, &usize) -> Ordering) -> bool {
-        if idx > self.bound {
+        if idx >= self.bound {
             true
         } else {
             self.round_rock_pos
@@ -190,27 +190,27 @@ fn main() {
         }
     };
 
-    println!("map after {current_cycle_count} cycles:\n{map}");
+    // println!("map after {current_cycle_count} cycles:\n{map}");
 
     for _ in 0..cycle_cycle_length {
         map.cycle();
         current_cycle_count += 1;
     }
-    println!("identical map after {current_cycle_count} cycles:\n{map}");
+    // println!("identical map after {current_cycle_count} cycles:\n{map}");
 
-    println!("skipping ahead by {cycle_cycle_length} at a time...");
+    // println!("skipping ahead by {cycle_cycle_length} at a time...");
     while current_cycle_count < 1_000_000_000 - cycle_cycle_length {
         // skip the next set of rounds
         current_cycle_count += cycle_cycle_length;
     }
 
-    dbg!(current_cycle_count);
+    // dbg!(current_cycle_count);
 
     while current_cycle_count != 1_000_000_000 {
         map.cycle();
         current_cycle_count += 1;
     }
 
-    println!("map after {current_cycle_count} cycles:\n{map}");
+    // println!("map after {current_cycle_count} cycles:\n{map}");
     println!("{}", map.get_load());
 }
