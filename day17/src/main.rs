@@ -32,7 +32,7 @@ where
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum Direction {
     Up,
     Down,
@@ -79,42 +79,74 @@ impl Direction {
             Some(update)
         }
     }
+
+    fn dir_from_move((old_r, old_c): (usize, usize), (new_r, new_c): (usize, usize)) -> Self {
+        Self::all()
+            .filter(|possible| {
+                possible.try_move(old_r, old_c, usize::MAX, usize::MAX) == Some((new_r, new_c))
+            })
+            .next()
+            .unwrap()
+    }
+
+    fn char(&self) -> &'static str {
+        match self {
+            Direction::Up => "↑",
+            Direction::Down => "↓",
+            Direction::Left => "←",
+            Direction::Right => "→",
+        }
+    }
+}
+
+struct Map {
+    tiles: Vec<Vec<u32>>,
+}
+impl FromStr for Map {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let tiles = s
+            .lines()
+            .map(|line| line.chars().map(|ch| ch.to_digit(10).unwrap()).collect())
+            .collect();
+
+        Ok(Map { tiles })
+    }
+}
+impl Display for Map {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for row in self.tiles.iter() {
+            for cost in row {
+                write!(f, "{}", *cost)?;
+            }
+            writeln!(f)?;
+        }
+
+        Ok(())
+    }
 }
 
 // ordering and equality only check current_cost
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct State {
-    tiles: Rc<Vec<Vec<u32>>>,
-    cost: u32,
     position: (usize, usize),
     direction: Option<Direction>,
     moves_in_direction: u32,
 }
-impl PartialEq for State {
-    fn eq(&self, other: &Self) -> bool {
-        self.cost == other.cost
-    }
-}
-impl Eq for State {}
-impl PartialOrd for State {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.cost.partial_cmp(&other.cost)
-    }
-}
-impl Ord for State {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.partial_cmp(other).unwrap()
-    }
-}
 impl State {
     fn next_states(
-        self,
+        &self,
+        map: &Rc<Map>,
+        current_cost: u32,
         min_moves_before_turn: u32,
         max_moves_before_turn: u32,
-    ) -> impl Iterator<Item = State> {
+    ) -> impl Iterator<Item = (State, u32)> {
         let (cur_r, cur_c) = self.position;
-        let width = self.tiles[0].len();
-        let height = self.tiles.len();
+        let map_clone = Rc::clone(map);
+        let self_clone = self.clone();
+        let width = map.tiles[0].len();
+        let height = map.tiles.len();
 
         match (self.direction, self.moves_in_direction) {
             (None, _) => Either4::A(Direction::all()),
@@ -135,106 +167,100 @@ impl State {
             ))
         })
         .map(move |(new_dir, (new_r, new_c))| {
-            let mut new_state = self.clone();
+            let mut new_state = self_clone.clone();
 
-            new_state.cost += new_state.tiles[new_r][new_c];
             new_state.position = (new_r, new_c);
             new_state.direction = Some(new_dir);
-            new_state.moves_in_direction = if Some(new_dir) == self.direction {
-                self.moves_in_direction + 1
+            new_state.moves_in_direction = if Some(new_dir) == self_clone.direction {
+                self_clone.moves_in_direction + 1
             } else {
                 1
             };
 
-            new_state
+            (new_state, current_cost + map_clone.tiles[new_r][new_c])
         })
-    }
-}
-impl FromStr for State {
-    type Err = ();
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let tiles = Rc::new(
-            s.lines()
-                .map(|line| line.chars().map(|ch| ch.to_digit(10).unwrap()).collect())
-                .collect(),
-        );
-
-        Ok(State {
-            tiles,
-            cost: 0,
-            position: (0, 0),
-            direction: None,
-            moves_in_direction: 0,
-        })
-    }
-}
-impl Display for State {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for row in self.tiles.iter() {
-            for cost in row {
-                write!(f, "{}", *cost)?;
-            }
-            writeln!(f)?;
-        }
-
-        Ok(())
     }
 }
 
 fn find_cheapest_path(
+    map: &Rc<Map>,
     initial_state: State,
     dest: (usize, usize),
     min_moves_before_turn: u32,
     max_moves_before_turn: u32,
 ) -> u32 {
-    let mut positions_to_costs = HashMap::new();
-    positions_to_costs.insert(initial_state.position, 0);
+    let width = map.tiles[0].len();
 
-    let mut states_to_search = BinaryHeap::new();
-    states_to_search.push(Reverse(initial_state)); // reverse since this is a max-heap
+    let mut state_to_cost = HashMap::new();
+    state_to_cost.insert(initial_state.clone(), 0);
 
+    let mut state_queue = BinaryHeap::new();
+    state_queue.push(Reverse((0, initial_state)));
+
+    let mut previous_states = HashMap::new();
     let mut visited = HashSet::new();
 
-    // dijkstra: queue is the inverse of "visited"
-    while let Some(current_state) = states_to_search.pop() {
-        let cur_pos = (
-            current_state.0.position,
-            current_state.0.direction,
-            current_state.0.moves_in_direction,
-        );
+    let print_path_to = |state: &State, previous_states: &HashMap<State, State>| {
+        let mut dbg_string = std::iter::repeat((0..width).map(|_| " ").collect::<String>())
+            .take(map.tiles.len())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut state = state.clone();
+        while state.position != (0, 0) {
+            let prev_state = previous_states.get(&state).unwrap();
 
+            let idx = state.position.0 * (width + 1) + state.position.1;
+            let (idx1, _) = dbg_string.char_indices().nth(idx).unwrap();
+            let (idx2, _) = dbg_string
+                .char_indices()
+                .nth(idx + 1)
+                .unwrap_or_else(|| (dbg_string.len(), ' '));
+            dbg_string.replace_range(
+                idx1..idx2,
+                Direction::dir_from_move(prev_state.position, state.position).char(),
+            );
+
+            state = prev_state.clone();
+        }
+        println!("{}", dbg_string);
+    };
+
+    // dijkstra: queue is the inverse of "visited"
+    while let Some(Reverse((current_cost, current_state))) = state_queue.pop() {
         // don't check the same position more than once
-        if !visited.insert(cur_pos) {
+        if !visited.insert(current_state.clone()) {
             continue;
         }
 
-        if cur_pos.0 == dest && cur_pos.2 >= min_moves_before_turn {
-            return *positions_to_costs.get(&dest).unwrap();
+        if current_state.position == dest
+            && current_state.moves_in_direction >= min_moves_before_turn
+        {
+            print_path_to(&current_state, &previous_states);
+            return current_cost;
         }
 
-        for new_state in current_state
-            .0
-            .next_states(min_moves_before_turn, max_moves_before_turn)
-        {
-            match positions_to_costs.get_mut(&new_state.position) {
-                Some(existing_cost) if new_state.cost < *existing_cost => {
+        for (new_state, new_state_cost) in current_state.next_states(
+            map,
+            current_cost,
+            min_moves_before_turn,
+            max_moves_before_turn,
+        ) {
+            match state_to_cost.get_mut(&new_state) {
+                Some(existing_cost) if new_state_cost < *existing_cost => {
                     // update
-                    *existing_cost = new_state.cost;
+                    *existing_cost = new_state_cost;
+                    previous_states.insert(new_state.clone(), current_state.clone());
                 }
                 None => {
                     // update
-                    positions_to_costs.insert(new_state.position, new_state.cost);
+                    state_to_cost.insert(new_state.clone(), new_state_cost);
+                    previous_states.insert(new_state.clone(), current_state.clone());
                 }
                 _ => {}
             }
 
-            if !visited.contains(&(
-                new_state.position,
-                new_state.direction,
-                new_state.moves_in_direction,
-            )) {
-                states_to_search.push(Reverse(new_state));
+            if !visited.contains(&new_state) {
+                state_queue.push(Reverse((new_state_cost, new_state)));
             }
         }
     }
@@ -243,16 +269,25 @@ fn find_cheapest_path(
 }
 
 fn main() {
-    let initial_state: State = std::fs::read_to_string("input")
-        .unwrap()
-        .parse()
-        .unwrap();
-
-    let dest = (
-        initial_state.tiles[0].len() - 1,
-        initial_state.tiles.len() - 1,
+    let map = Rc::<Map>::new(
+        std::fs::read_to_string("input")
+            .unwrap()
+            .parse()
+            .unwrap(),
     );
+    let initial_state = State {
+        position: (0, 0),
+        direction: None,
+        moves_in_direction: 0,
+    };
 
-    println!("{}", find_cheapest_path(initial_state.clone(), dest, 0, 3));
-    println!("{}", find_cheapest_path(initial_state, dest, 4, 10));
+    println!("{map}");
+
+    let dest = (map.tiles[0].len() - 1, map.tiles.len() - 1);
+
+    println!(
+        "{}",
+        find_cheapest_path(&map, initial_state.clone(), dest, 0, 3)
+    );
+    println!("{}", find_cheapest_path(&map, initial_state, dest, 4, 10));
 }
